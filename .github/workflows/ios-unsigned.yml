@@ -1,0 +1,63 @@
+# Builds an unsigned GolfBru.ipa on a cloud Mac. Sign and install it with your own Apple ID
+# (e.g. Sideloadly). Run it from the Actions tab: "iOS build (unsigned)" -> Run workflow.
+name: iOS build (unsigned)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Expo SDK 58 needs Xcode 26.4 or newer; pick the newest Xcode 26 on the runner.
+      - name: Select Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          echo "Using $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - run: npm ci
+
+      - name: Generate the native iOS project
+        run: npx expo prebuild --platform ios --clean --no-install
+
+      - name: Install CocoaPods
+        run: cd ios && pod install
+
+      - name: Build (no code signing)
+        run: |
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | tail -n 200
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Package .ipa
+        run: |
+          APP=$(ls -d build/Build/Products/Release-iphoneos/*.app | head -1)
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry GolfBru.ipa Payload
+          ls -lh GolfBru.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GolfBru-ipa
+          path: GolfBru.ipa
+          retention-days: 14
